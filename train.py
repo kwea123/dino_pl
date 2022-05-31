@@ -1,65 +1,78 @@
 import torch
-from losses import DINOLoss
+from torch import nn
+import torch.nn.functional as F
+import torchvision.transforms as T
+import numpy as np
+import cv2
+from PIL import Image
 
 from opt import get_opts
 
 # dataset
 from dataset import ImageDataset
-from aug_utils import DataAugmentationDINO
+from aug_utils import TrainDINO, ValDINO
 from torch.utils.data import DataLoader
 
 # model
-import timm
-from models import MultiCropWrapper, DINOHead
+from models import vits_dict, MultiCropWrapper, DINOHead
 from losses import DINOLoss
 
 # optimizer
 from torch.optim import AdamW
 from timm.scheduler.cosine_lr import CosineLRScheduler
-from misc import get_learning_rate
 
-from pytorch_lightning import LightningModule, Trainer, seed_everything
+from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
+
+
+def att2img(att, cmap=cv2.COLORMAP_PLASMA):
+    """
+    att: (H, W)
+    """
+    x = att.cpu().numpy()
+    mi = np.min(x)
+    ma = np.max(x)
+    x = (x-mi)/(ma-mi+1e-8) # normalize to 0~1
+    x = (255*x).astype(np.uint8)
+    x_ = Image.fromarray(cv2.applyColorMap(x, cmap))
+    x_ = T.ToTensor()(x_) # (3, H, W)
+    return x_
 
 
 class DINOSystem(LightningModule):
     def __init__(self, hparams):
         super().__init__()
         self.save_hyperparameters(hparams)
+        self.automatic_optimization = False
 
-        arch = f'{hparams.arch}_patch16_224'
-        student_backbone = \
-            timm.create_model(arch, pretrained=False,
-                              drop_path_rate=hparams.drop_path_rate)
-        teacher_backbone = timm.create_model(arch, pretrained=False)
+        model = vits_dict[hparams.arch]
+        student_backbone = model(patch_size=hparams.patch_size,
+                                      drop_path_rate=hparams.drop_path_rate)
+        self.teacher_backbone = model(patch_size=hparams.patch_size,)
 
-        student_head = DINOHead(student_backbone.embed_dim,
-                                hparams.out_dim,
+        student_head = DINOHead(student_backbone.embed_dim, hparams.out_dim,
                                 hparams.norm_last_layer)
-        teacher_head = DINOHead(teacher_backbone.embed_dim)
+        teacher_head = DINOHead(self.teacher_backbone.embed_dim, hparams.out_dim)
 
         self.student = MultiCropWrapper(student_backbone, student_head)
-        self.teacher = MultiCropWrapper(teacher_backbone, teacher_head)
+        self.teacher = MultiCropWrapper(self.teacher_backbone, teacher_head)
         # teacher and student start with the same weights
         self.teacher.load_state_dict(self.student.state_dict())
 
-        for p in self.teacher.parameters():
-            p.requires_grad = False
+        # teacher is not trained
+        for p in self.teacher.parameters(): p.requires_grad = False
 
         self.loss = DINOLoss(hparams.out_dim,
                              hparams.local_crops_number+2,
                              hparams.warmup_teacher_temp,
-                             hparams.teacher_temp,
+                             hparams.final_teacher_temp,
                              hparams.warmup_teacher_temp_epochs,
                              hparams.num_epochs)
 
     def setup(self, stage=None):
-        transform = DataAugmentationDINO(hparams.global_crops_scale,
-                                         hparams.local_crops_scale,
-                                         hparams.local_crops_number)
-        self.train_dataset = ImageDataset(hparams.root_dir, transform=transform)
-        self.val_dataset = ImageDataset(hparams.root_dir)
+        self.train_dataset = ImageDataset(hparams.root_dir, 'train', vars(hparams))
+        self.val_dataset = ImageDataset(hparams.root_dir, 'val', vars(hparams))
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
@@ -71,23 +84,52 @@ class DINOSystem(LightningModule):
     def val_dataloader(self):
         return DataLoader(self.val_dataset,
                           shuffle=True,
-                          num_workers=4,
-                          batch_size=self.hparams.batch_size,
+                          num_workers=1,
+                          batch_size=1, # validate one image
                           pin_memory=True)
 
     def configure_optimizers(self):
-        self.optimizer = AdamW(self.student.parameters(),
-                               hparams.lr,
-                               weight_decay=hparams.weight_decay)
-        
-        scheduler = CosineLRScheduler(self.optimizer,
-                                      t_initial=hparams.num_epochs,
-                                      lr_min=hparams.lr/1e2,
-                                      warmup_t=hparams.warmup_epochs,
-                                      warmup_lr_init=1e-6,
-                                      warmup_prefix=True)
+        regularized, not_regularized = [], []
+        for n, p in self.student.named_parameters():
+            if not p.requires_grad:
+                continue
+            # we do not regularize biases nor Norm parameters
+            if n.endswith(".bias") or len(p.shape) == 1:
+                not_regularized.append(p)
+            else:
+                regularized.append(p)
+        param_groups = [{'params': regularized},
+                        {'params': not_regularized, 'weight_decay': 0.}]
 
-        return [self.optimizer], [scheduler]
+        lr = hparams.lr * (hparams.batch_size*hparams.num_gpus/256)
+        self.opt = AdamW(param_groups, lr)
+
+        self.lr_sch = CosineLRScheduler(self.opt,
+                                        t_initial=hparams.num_epochs,
+                                        lr_min=1e-6,
+                                        warmup_t=hparams.warmup_epochs,
+                                        warmup_lr_init=1e-6,
+                                        warmup_prefix=True)
+
+        dummy = torch.nn.Parameter() # dummy parameter for scheduler
+        # weight decay scheduler
+        self.wd_sch = CosineLRScheduler(AdamW(dummy, hparams.weight_decay_init),
+                                        t_initial=hparams.num_epochs,
+                                        lr_min=hparams.weight_decay_end)
+
+        # momentum scheduler
+        self.mm_sch = CosineLRScheduler(AdamW(dummy, hparams.momentum_teacher),
+                                        t_initial=hparams.num_epochs,
+                                        lr_min=1.0)
+
+    def on_train_epoch_start(self):
+        # update learning rate per epoch
+        lrs = self.lr_sch.get_epoch_values(self.current_epoch)
+        wd = self.wd_sch.get_epoch_values(self.current_epoch)[0]
+        for i, param_group in enumerate(self.opt.param_groups):
+            param_group['lr'] = lrs[i]
+            if i == 0:  # only the first group is regularized
+                param_group['weight_decay'] = wd
 
     def training_step(self, batch, batch_idx):
         """
@@ -99,46 +141,55 @@ class DINOSystem(LightningModule):
 
         loss = self.loss(student_output, teacher_output, self.current_epoch)
 
+        self.opt.zero_grad()
+        self.manual_backward(loss)
+        # clip gradient
+        nn.utils.clip_grad_norm_(self.student.parameters(), hparams.clip_grad)
+        # cancel gradient for the first epochs
+        if self.current_epoch < hparams.ep_freeze_last_layer:
+            for n, p in self.student.named_parameters():
+                if "last_layer" in n:
+                    p.grad = None
+        self.opt.step()
+
         # EMA update for the teacher
-        with torch.no_grad():
-            m = momentum_schedule[it] # momentum parameter
-            for ps, pt in \
-                zip(self.student.parameters(), self.teacher.parameters()):
-                pt.data.mul_(m).add_((1-m)*ps.detach().data)
+        m = self.mm_sch.get_epoch_values(self.current_epoch)[0]
+        for ps, pt in zip(self.student.parameters(), self.teacher.parameters()):
+            pt.data.mul_(m).add_((1-m)*ps.data)
 
-        self.los('lr', get_learning_rate(self.optimizer))
-        self.log('train/loss', loss)
-
-        return loss
+        self.log('rates/lr', self.opt.param_groups[0]['lr'])
+        self.log('rates/weight_decay', self.opt.param_groups[0]['weight_decay'])
+        self.log('rates/momentum', m)
+        self.log('train/loss', loss, True)
 
     def validation_step(self, batch, batch_idx):
-        pass
-        # images, labels = batch
-        # logits_predicted = self(images)
+        img_orig, img_norm = batch
 
-        # loss = F.cross_entropy(logits_predicted, labels)
-        # acc = torch.sum(torch.eq(torch.argmax(logits_predicted, -1), labels).to(torch.float32)) / len(labels)
+        w_featmap = img_norm.shape[-1] // hparams.patch_size
+        h_featmap = img_norm.shape[-2] // hparams.patch_size
 
-        # log = {'val_loss': loss,
-        #        'val_acc': acc}
+        atts = self.teacher_backbone.get_last_selfattention(img_norm)
+        atts = atts[:, :, 0, 1:].reshape(1, -1, h_featmap, w_featmap)
+        atts = F.interpolate(atts, scale_factor=hparams.patch_size, mode="nearest")[0] # (6, h, w)
 
-        # return log
+        return {'attentions': atts, 'img': img_orig}
 
-    # def validation_epoch_end(self, outputs):
-    #     mean_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
-    #     mean_acc = torch.stack([x['val_acc'] for x in outputs]).mean()
+    def validation_epoch_end(self, outputs):
+        atts = outputs[0]['attentions']
 
-    #     self.log('val/loss', mean_loss, prog_bar=True)
-    #     self.log('val/acc', mean_acc, prog_bar=True)
+        tb = self.logger.experiment
+        tb.add_image('image', outputs[0]['img'], self.global_step)
+        for i in range(len(atts)):
+            tb.add_image(f'attentions/{i}', att2img(atts[i]), self.global_step)
 
 
 if __name__ == '__main__':
     hparams = get_opts()
-    mnistsystem = DINOSystem(hparams)
+    system = DINOSystem(hparams)
 
     ckpt_cb = ModelCheckpoint(dirpath=f'ckpts/{hparams.exp_name}',
                               filename='{epoch:d}',
-                              save_top_k=-1)
+                              save_top_k=-1) # TODO: save only weight & teacher
     pbar = TQDMProgressBar(refresh_rate=1)
     callbacks = [ckpt_cb, pbar]
 
@@ -150,11 +201,10 @@ if __name__ == '__main__':
                       callbacks=callbacks,
                       logger=logger,
                       enable_model_summary=False,
-                      gradient_clip_val=1.0,
-                      precision='bf16' if hparams.use_bf16 else 32,
+                      precision=16 if hparams.fp16 else 32,
                       accelerator='auto',
                       devices=hparams.num_gpus,
                       num_sanity_val_steps=1,
                       benchmark=True)
 
-    trainer.fit(mnistsystem)
+    trainer.fit(system)
