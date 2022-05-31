@@ -54,8 +54,8 @@ class DINOSystem(LightningModule):
 
         model = vits_dict[hparams.arch]
         student_backbone = model(patch_size=hparams.patch_size,
-                                      drop_path_rate=hparams.drop_path_rate)
-        self.teacher_backbone = model(patch_size=hparams.patch_size,)
+                                 drop_path_rate=hparams.drop_path_rate)
+        self.teacher_backbone = model(patch_size=hparams.patch_size)
 
         student_head = DINOHead(student_backbone.embed_dim, hparams.out_dim,
                                 hparams.norm_last_layer)
@@ -142,7 +142,7 @@ class DINOSystem(LightningModule):
         # update learning rate, weight decay
         for i, param_group in enumerate(opt.param_groups):
             param_group['lr'] = self.lr_sch[self.global_step]
-            if i == 0:  # only the first group is regularized
+            if i == 0: # only the first group is regularized
                 param_group['weight_decay'] = self.wd_sch[self.global_step]
 
         teacher_output = self.teacher(batch[:2])
