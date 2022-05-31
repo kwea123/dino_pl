@@ -26,7 +26,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
 
 
-def att2img(att, cmap=cv2.COLORMAP_PLASMA):
+def att2img(att, cmap=cv2.COLORMAP_PLASMA): # TODO: PLASMA correct??
     """
     att: (H, W)
     """
@@ -96,20 +96,6 @@ class DINOSystem(LightningModule):
                            hparams.local_crops_number)
         self.val_dataset.transform = ValTransform()
 
-    def train_dataloader(self):
-        return DataLoader(self.train_dataset,
-                          shuffle=True,
-                          num_workers=4,
-                          batch_size=self.hparams.batch_size,
-                          pin_memory=True)
-
-    def val_dataloader(self):
-        return DataLoader(self.val_dataset,
-                          shuffle=False,
-                          num_workers=4,
-                          batch_size=1, # validate one image
-                          pin_memory=True)
-
     def configure_optimizers(self):
         regularized, not_regularized = [], []
         for n, p in self.student.named_parameters():
@@ -123,11 +109,22 @@ class DINOSystem(LightningModule):
         param_groups = [{'params': regularized},
                         {'params': not_regularized, 'weight_decay': 0.}]
 
-        lr = hparams.lr * (hparams.batch_size*hparams.num_gpus/256)
-        niter_per_ep = len(self.train_dataset)
+        self.lr = hparams.lr * (hparams.batch_size*hparams.num_gpus/256)
+        opt = AdamW(param_groups, self.lr)
 
-        self.opt = AdamW(param_groups, lr)
-        self.lr_sch = cosine_scheduler(lr, 1e-6, hparams.num_epochs, niter_per_ep,
+        return opt
+
+    def train_dataloader(self):
+        self.loader = DataLoader(self.train_dataset,
+                                 shuffle=True,
+                                 num_workers=4,
+                                 batch_size=self.hparams.batch_size,
+                                 pin_memory=True,
+                                 drop_last=True)
+
+        # define schedulers based on number of iterations
+        niter_per_ep = len(self.loader)
+        self.lr_sch = cosine_scheduler(self.lr, 1e-6, hparams.num_epochs, niter_per_ep,
                                        hparams.warmup_epochs)
         # weight decay scheduler
         self.wd_sch = cosine_scheduler(hparams.weight_decay_init, hparams.weight_decay_end,
@@ -136,13 +133,23 @@ class DINOSystem(LightningModule):
         self.mm_sch = cosine_scheduler(hparams.momentum_teacher, 1.0,
                                        hparams.num_epochs, niter_per_ep)
 
+        return self.loader
+
+    def val_dataloader(self):
+        return DataLoader(self.val_dataset,
+                          shuffle=False,
+                          num_workers=4,
+                          batch_size=1, # validate one image
+                          pin_memory=True)
+
     def training_step(self, batch, batch_idx):
         """
         batch: a list of "2+local_crops_number" tensors
                each tensor is of shape (B, 3, h, w)
         """
+        opt = self.optimizers()
         # update learning rate, weight decay
-        for i, param_group in enumerate(self.opt.param_groups):
+        for i, param_group in enumerate(opt.param_groups):
             param_group['lr'] = self.lr_sch[self.global_step]
             if i == 0:  # only the first group is regularized
                 param_group['weight_decay'] = self.wd_sch[self.global_step]
@@ -151,7 +158,7 @@ class DINOSystem(LightningModule):
         student_output = self.student(batch)
         loss = self.loss(student_output, teacher_output, self.current_epoch)
 
-        self.opt.zero_grad()
+        opt.zero_grad()
         self.manual_backward(loss)
         # clip gradient
         nn.utils.clip_grad_norm_(self.student.parameters(), hparams.clip_grad)
@@ -160,15 +167,15 @@ class DINOSystem(LightningModule):
             for n, p in self.student.named_parameters():
                 if "last_layer" in n:
                     p.grad = None
-        self.opt.step()
+        opt.step()
 
         # EMA update for the teacher
         m = self.mm_sch[self.global_step]
         for ps, pt in zip(self.student.parameters(), self.teacher.parameters()):
             pt.data.mul_(m).add_((1-m)*ps.data)
 
-        self.log('rates/lr', self.opt.param_groups[0]['lr'])
-        self.log('rates/weight_decay', self.opt.param_groups[0]['weight_decay'])
+        self.log('rates/lr', opt.param_groups[0]['lr'])
+        self.log('rates/weight_decay', opt.param_groups[0]['weight_decay'])
         self.log('rates/momentum', m)
         self.log('train/loss', loss, True)
 

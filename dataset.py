@@ -12,7 +12,7 @@ class ImageDataset(Dataset):
     def __init__(self, root='/home/kwea123/data/stamps', split='train'):
         self.split = split
         self.image_paths = []
-        # TODO: save image paths to file
+        # TODO: save image paths to file to avoid reading overhead
         stamp_idxs = sorted(os.listdir(root))
         print('loading image paths ...')
         for stamp_idx in stamp_idxs:
@@ -22,7 +22,9 @@ class ImageDataset(Dataset):
         print(f'{len(self.image_paths)} image paths loaded!')
 
     def __len__(self):
-        return len(self.image_paths)
+        if self.split == 'train':
+            return len(self.image_paths)
+        return 1
 
     def __getitem__(self, idx):
         if self.split != 'train': # randomly choose an image for validation

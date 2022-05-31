@@ -27,7 +27,7 @@ class DINOLoss(nn.Module):
         student_output: (B*ncrops, out_dim)
         teacher_output: (B*2, out_dim)
         """
-        student_out = student_output / self.student_temp
+        student_out = student_output/self.student_temp
         student_out = student_out.chunk(self.ncrops) # global views + local views
 
         # teacher centering and sharpening
@@ -38,10 +38,9 @@ class DINOLoss(nn.Module):
         total_loss = n_loss_terms = 0
         for iq, q in enumerate(teacher_out):
             for v in range(len(student_out)):
-                if v == iq:
-                    # skip cases where student and teacher operate on the same view
+                if v == iq: # skip cases where student and teacher operate on the same view
                     continue
-                loss = reduce(-q * F.log_softmax(student_out[v], dim=-1), 'b o -> b', 'sum')
+                loss = reduce(-q*F.log_softmax(student_out[v], dim=-1), 'b o -> b', 'sum')
                 total_loss += loss.mean()
                 n_loss_terms += 1
         total_loss /= n_loss_terms
@@ -53,9 +52,7 @@ class DINOLoss(nn.Module):
         """
         Update center used for teacher output.
         """
-        batch_center = torch.sum(teacher_output, dim=0, keepdim=True)
-        batch_center = batch_center / len(teacher_output)
+        batch_center = reduce(teacher_output, 'b o -> 1 o', 'mean')
 
-        # ema update
         self.center = self.center * self.center_momentum + \
                       batch_center * (1 - self.center_momentum)

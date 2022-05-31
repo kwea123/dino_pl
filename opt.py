@@ -23,7 +23,8 @@ def get_opts():
     parser.add_argument('--norm_last_layer', default=False, action="store_true",
                         help="""Whether or not to weight normalize the last layer of the DINO head.
                         Not normalizing leads to better performance but can make the training unstable.
-                        In our experiments, we typically set this paramater to False with vit_small and True with vit_base.""")
+                        In our experiments, we typically set this paramater to False with vit_small
+                        and True with vit_base.""")
     parser.add_argument('--momentum_teacher', type=float, default=0.9995,
                         help="""Base EMA parameter for teacher update.
                         The value is increased to 1 during training with cosine schedule.
@@ -51,7 +52,7 @@ def get_opts():
                         help='Number of warmup epochs for the teacher temperature.')
 
     # training parameters
-    parser.add_argument('--batch_size', type=int, default=64,
+    parser.add_argument('--batch_size', type=int, default=168,
                         help='batch size per gpu')
     parser.add_argument('--num_epochs', type=int, default=100,
                         help='number of training epochs')
