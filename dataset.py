@@ -9,7 +9,7 @@ import numpy as np
 
 
 class ImageDataset(Dataset):
-    def __init__(self, root='/home/kwea123/data/stamps', split='train'):
+    def __init__(self, root, split='train'):
         self.split = split
         self.image_paths = []
         # TODO: save image paths to file to avoid reading overhead

@@ -1,10 +1,6 @@
 import torch
-from torch import nn
-import torch.nn.functional as F
-import torchvision.transforms as T
 import numpy as np
-import cv2
-from PIL import Image
+from matplotlib import cm
 import copy
 
 from opt import get_opts
@@ -17,25 +13,20 @@ from torch.utils.data import DataLoader
 from models import vits_dict, MultiCropWrapper, DINOHead
 from losses import DINOLoss
 
-# optimizer
-from torch.optim import AdamW
-# from timm.scheduler.cosine_lr import CosineLRScheduler
-
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
 
 
-def att2img(att, cmap=cv2.COLORMAP_PLASMA): # TODO: PLASMA correct??
+def att2img(att, cmap=cm.get_cmap('plasma')):
     """
     att: (H, W)
     """
     x = att.cpu().numpy()
     mi, ma = np.min(x), np.max(x)
     x = (x-mi)/(ma-mi+1e-8) # normalize to 0~1
-    x = (255*x).astype(np.uint8)
-    x_ = Image.fromarray(cv2.applyColorMap(x, cmap))
-    x_ = T.ToTensor()(x_) # (3, H, W)
+    x_ = cmap(x)[..., :3] # (H, W, 3)
+    x_ = torch.from_numpy(x_).permute(2, 0, 1) # (3, H, W)
     return x_
 
 
@@ -110,7 +101,7 @@ class DINOSystem(LightningModule):
                         {'params': not_regularized, 'weight_decay': 0.}]
 
         self.lr = hparams.lr * (hparams.batch_size*hparams.num_gpus/256)
-        opt = AdamW(param_groups, self.lr)
+        opt = torch.optim.AdamW(param_groups, self.lr)
 
         return opt
 
@@ -161,7 +152,7 @@ class DINOSystem(LightningModule):
         opt.zero_grad()
         self.manual_backward(loss)
         # clip gradient
-        nn.utils.clip_grad_norm_(self.student.parameters(), hparams.clip_grad)
+        torch.nn.utils.clip_grad_norm_(self.student.parameters(), hparams.clip_grad)
         # cancel gradient for the first epochs
         if self.current_epoch < hparams.ep_freeze_last_layer:
             for n, p in self.student.named_parameters():
@@ -187,7 +178,8 @@ class DINOSystem(LightningModule):
 
         atts = self.teacher_backbone.get_last_selfattention(img_norm)
         atts = atts[:, :, 0, 1:].reshape(1, -1, h_featmap, w_featmap)
-        atts = F.interpolate(atts, scale_factor=hparams.patch_size, mode="nearest")[0] # (6, h, w)
+        atts = torch.nn.functional.interpolate(atts,
+                    scale_factor=hparams.patch_size, mode="nearest")[0] # (6, h, w)
 
         return {'attentions': atts, 'img': img_orig}
 
