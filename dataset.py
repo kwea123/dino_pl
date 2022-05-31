@@ -9,26 +9,17 @@ import numpy as np
 
 
 class ImageDataset(Dataset):
-    def __init__(self, root_dir='/home/kwea123/data/stamps', split='train', **kwargs):
+    def __init__(self, root='/home/kwea123/data/stamps', split='train'):
         self.split = split
-        self.kwargs = kwargs
         self.image_paths = []
-        stamp_idxs = sorted(os.listdir(root_dir))
+        # TODO: save image paths to file
+        stamp_idxs = sorted(os.listdir(root))
         print('loading image paths ...')
         for stamp_idx in stamp_idxs:
-            image_paths = glob.glob(os.path.join(root_dir, f'{stamp_idx}/[0-9]*.png'))
+            image_paths = glob.glob(os.path.join(root, f'{stamp_idx}/[0-9]*.png'))
             image_paths = sorted(filter(lambda x: not 'key' in x, image_paths))
             self.image_paths += image_paths
-        print('image paths loaded!')
-        self.get_transform()
-
-    def get_transform(self):
-        if self.split == 'train':
-            self.transform = TrainTransform(self.kwargs['global_crops_scale'],
-                                            self.kwargs['local_crops_scale'],
-                                            self.kwargs['local_crops_number'])
-        else:
-            self.transform = ValTransform()
+        print(f'{len(self.image_paths)} image paths loaded!')
 
     def __len__(self):
         return len(self.image_paths)

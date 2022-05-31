@@ -5,12 +5,12 @@ import torchvision.transforms as T
 import numpy as np
 import cv2
 from PIL import Image
+import copy
 
 from opt import get_opts
 
 # dataset
-from dataset import ImageDataset
-from aug_utils import TrainDINO, ValDINO
+from dataset import ImageDataset, TrainTransform, ValTransform
 from torch.utils.data import DataLoader
 
 # model
@@ -19,7 +19,7 @@ from losses import DINOLoss
 
 # optimizer
 from torch.optim import AdamW
-from timm.scheduler.cosine_lr import CosineLRScheduler
+# from timm.scheduler.cosine_lr import CosineLRScheduler
 
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar
@@ -31,13 +31,28 @@ def att2img(att, cmap=cv2.COLORMAP_PLASMA):
     att: (H, W)
     """
     x = att.cpu().numpy()
-    mi = np.min(x)
-    ma = np.max(x)
+    mi, ma = np.min(x), np.max(x)
     x = (x-mi)/(ma-mi+1e-8) # normalize to 0~1
     x = (255*x).astype(np.uint8)
     x_ = Image.fromarray(cv2.applyColorMap(x, cmap))
     x_ = T.ToTensor()(x_) # (3, H, W)
     return x_
+
+
+def cosine_scheduler(base_value, final_value, epochs, niter_per_ep,
+                     warmup_epochs=0, start_warmup_value=1e-6):
+    warmup_schedule = np.array([])
+    warmup_iters = warmup_epochs * niter_per_ep
+    if warmup_epochs > 0:
+        warmup_schedule = np.linspace(start_warmup_value, base_value, warmup_iters)
+
+    iters = np.arange(epochs * niter_per_ep - warmup_iters)
+    schedule = final_value + 0.5 * (base_value - final_value) * \
+                             (1 + np.cos(np.pi * iters / len(iters)))
+
+    schedule = np.concatenate((warmup_schedule, schedule))
+    assert len(schedule) == epochs * niter_per_ep
+    return schedule
 
 
 class DINOSystem(LightningModule):
@@ -71,8 +86,15 @@ class DINOSystem(LightningModule):
                              hparams.num_epochs)
 
     def setup(self, stage=None):
-        self.train_dataset = ImageDataset(hparams.root_dir, 'train', vars(hparams))
-        self.val_dataset = ImageDataset(hparams.root_dir, 'val', vars(hparams))
+        self.train_dataset = ImageDataset(hparams.root_dir, 'train')
+        self.val_dataset = copy.deepcopy(self.train_dataset)
+        self.val_dataset.split = 'val'
+
+        self.train_dataset.transform = \
+            TrainTransform(hparams.global_crops_scale,
+                           hparams.local_crops_scale,
+                           hparams.local_crops_number)
+        self.val_dataset.transform = ValTransform()
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
@@ -83,8 +105,8 @@ class DINOSystem(LightningModule):
 
     def val_dataloader(self):
         return DataLoader(self.val_dataset,
-                          shuffle=True,
-                          num_workers=1,
+                          shuffle=False,
+                          num_workers=4,
                           batch_size=1, # validate one image
                           pin_memory=True)
 
@@ -102,43 +124,31 @@ class DINOSystem(LightningModule):
                         {'params': not_regularized, 'weight_decay': 0.}]
 
         lr = hparams.lr * (hparams.batch_size*hparams.num_gpus/256)
+        niter_per_ep = len(self.train_dataset)
+
         self.opt = AdamW(param_groups, lr)
-
-        self.lr_sch = CosineLRScheduler(self.opt,
-                                        t_initial=hparams.num_epochs,
-                                        lr_min=1e-6,
-                                        warmup_t=hparams.warmup_epochs,
-                                        warmup_lr_init=1e-6,
-                                        warmup_prefix=True)
-
-        dummy = torch.nn.Parameter() # dummy parameter for scheduler
+        self.lr_sch = cosine_scheduler(lr, 1e-6, hparams.num_epochs, niter_per_ep,
+                                       hparams.warmup_epochs)
         # weight decay scheduler
-        self.wd_sch = CosineLRScheduler(AdamW(dummy, hparams.weight_decay_init),
-                                        t_initial=hparams.num_epochs,
-                                        lr_min=hparams.weight_decay_end)
-
+        self.wd_sch = cosine_scheduler(hparams.weight_decay_init, hparams.weight_decay_end,
+                                       hparams.num_epochs, niter_per_ep)
         # momentum scheduler
-        self.mm_sch = CosineLRScheduler(AdamW(dummy, hparams.momentum_teacher),
-                                        t_initial=hparams.num_epochs,
-                                        lr_min=1.0)
-
-    def on_train_epoch_start(self):
-        # update learning rate per epoch
-        lrs = self.lr_sch.get_epoch_values(self.current_epoch)
-        wd = self.wd_sch.get_epoch_values(self.current_epoch)[0]
-        for i, param_group in enumerate(self.opt.param_groups):
-            param_group['lr'] = lrs[i]
-            if i == 0:  # only the first group is regularized
-                param_group['weight_decay'] = wd
+        self.mm_sch = cosine_scheduler(hparams.momentum_teacher, 1.0,
+                                       hparams.num_epochs, niter_per_ep)
 
     def training_step(self, batch, batch_idx):
         """
         batch: a list of "2+local_crops_number" tensors
                each tensor is of shape (B, 3, h, w)
         """
+        # update learning rate, weight decay
+        for i, param_group in enumerate(self.opt.param_groups):
+            param_group['lr'] = self.lr_sch[self.global_step]
+            if i == 0:  # only the first group is regularized
+                param_group['weight_decay'] = self.wd_sch[self.global_step]
+
         teacher_output = self.teacher(batch[:2])
         student_output = self.student(batch)
-
         loss = self.loss(student_output, teacher_output, self.current_epoch)
 
         self.opt.zero_grad()
@@ -153,7 +163,7 @@ class DINOSystem(LightningModule):
         self.opt.step()
 
         # EMA update for the teacher
-        m = self.mm_sch.get_epoch_values(self.current_epoch)[0]
+        m = self.mm_sch[self.global_step]
         for ps, pt in zip(self.student.parameters(), self.teacher.parameters()):
             pt.data.mul_(m).add_((1-m)*ps.data)
 
@@ -178,7 +188,7 @@ class DINOSystem(LightningModule):
         atts = outputs[0]['attentions']
 
         tb = self.logger.experiment
-        tb.add_image('image', outputs[0]['img'], self.global_step)
+        tb.add_image('image', outputs[0]['img'][0], self.global_step)
         for i in range(len(atts)):
             tb.add_image(f'attentions/{i}', att2img(atts[i]), self.global_step)
 
