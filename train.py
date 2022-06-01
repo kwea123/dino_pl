@@ -62,6 +62,10 @@ class DINOSystem(LightningModule):
         teacher_head = DINOHead(self.teacher_backbone.embed_dim, hparams.out_dim)
 
         self.student = MultiCropWrapper(student_backbone, student_head)
+        if hparams.pretrained_path: # fine-tune from pretrained dino
+            print(f'loading pretrained model from {hparams.pretrained_path} ...')
+            ckpt = torch.load(hparams.pretrained_path, map_location='cpu')
+            self.student.load_state_dict({k: v for k, v in ckpt['teacher'].items()})
         self.teacher = MultiCropWrapper(self.teacher_backbone, teacher_head)
         # teacher and student start with the same weights
         self.teacher.load_state_dict(self.student.state_dict())
@@ -108,8 +112,8 @@ class DINOSystem(LightningModule):
     def train_dataloader(self):
         self.loader = DataLoader(self.train_dataset,
                                  shuffle=True,
-                                 num_workers=4,
-                                 batch_size=self.hparams.batch_size,
+                                 num_workers=hparams.num_workers,
+                                 batch_size=hparams.batch_size,
                                  pin_memory=True,
                                  drop_last=True)
 
@@ -129,7 +133,7 @@ class DINOSystem(LightningModule):
     def val_dataloader(self):
         return DataLoader(self.val_dataset,
                           shuffle=False,
-                          num_workers=4,
+                          num_workers=hparams.num_workers,
                           batch_size=1, # validate one image
                           pin_memory=True)
 
@@ -152,7 +156,8 @@ class DINOSystem(LightningModule):
         opt.zero_grad()
         self.manual_backward(loss)
         # clip gradient
-        torch.nn.utils.clip_grad_norm_(self.student.parameters(), hparams.clip_grad)
+        if hparams.clip_grad > 0:
+            torch.nn.utils.clip_grad_norm_(self.student.parameters(), hparams.clip_grad)
         # cancel gradient for the first epochs
         if self.current_epoch < hparams.ep_freeze_last_layer:
             for n, p in self.student.named_parameters():

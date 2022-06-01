@@ -31,7 +31,7 @@ class ImageDataset(Dataset):
             idx = np.random.choice(len(self.image_paths), 1)[0]
         image = imageio.imread(self.image_paths[idx])
         if image.shape[-1] == 4: # if there is alpha channel
-            image[image[..., -1]==0, :3]= 255 # a=0 to white
+            image[image[..., -1]==0, :3] = 255 # a=0 to white
             image = image[..., :3]
         return self.transform(image)
 

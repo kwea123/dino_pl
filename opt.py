@@ -31,12 +31,12 @@ def get_opts():
                         We recommend setting a higher value with small batches: for example use 0.9995 with batch size of 256.""")
 
     # augmentation parameters
-    parser.add_argument('--global_crops_scale', type=float, nargs='+', default=(0.4, 1.),
+    parser.add_argument('--global_crops_scale', type=float, nargs='+', default=(0.25, 1.),
                         help="""Scale range of the cropped image before resizing, relative to the origin image.
                         Used for large global view cropping.""")
     parser.add_argument('--local_crops_number', type=int, default=8,
                         help="""Number of small local views to generate.""")
-    parser.add_argument('--local_crops_scale', type=float, nargs='+', default=(0.05, 0.4),
+    parser.add_argument('--local_crops_scale', type=float, nargs='+', default=(0.05, 0.25),
                         help="""Scale range of the cropped image before resizing, relative to the origin image.
                         Used for small local view cropping of multi-crop.""")
 
@@ -54,6 +54,8 @@ def get_opts():
     # training parameters
     parser.add_argument('--batch_size', type=int, default=168,
                         help='batch size per gpu')
+    parser.add_argument('--num_workers', type=int, default=10,
+                        help='number of workers')
     parser.add_argument('--num_epochs', type=int, default=100,
                         help='number of training epochs')
     parser.add_argument('--num_gpus', type=int, default=1,
@@ -66,12 +68,13 @@ def get_opts():
                         help="""Final value of the weight decay.
                         We use a cosine schedule for WD and using a larger decay by
                         the end of training improves performance for ViTs.""")
-    parser.add_argument('--clip_grad', type=float, default=3.0,
+    parser.add_argument('--clip_grad', type=float, default=0.,
                         help="""Clipping with norm .3 ~ 1.0 can
                         help optimization for larger ViT architectures. 0 for disabling.""")
 
-    # parser.add_argument('--ckpt_path', type=str, default=None,
-    #                     help='pretrained checkpoint path to load')
+    parser.add_argument('--pretrained_path', type=str,
+                        default='dino_deitsmall16_pretrain_full_checkpoint.pth',
+                        help='pretrained checkpoint path to load')
 
     parser.add_argument('--fp16', default=False, action='store_true',
                         help='use fp16 training')
