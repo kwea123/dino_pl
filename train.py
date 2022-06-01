@@ -218,7 +218,7 @@ if __name__ == '__main__':
                       precision=16 if hparams.fp16 else 32,
                       accelerator='auto',
                       devices=hparams.num_gpus,
-                      num_sanity_val_steps=1,
-                      benchmark=True)
+                      strategy='ddp' if hparams.num_gpus>1 else None,
+                      num_sanity_val_steps=1)
 
     trainer.fit(system)
