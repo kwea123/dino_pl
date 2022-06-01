@@ -64,8 +64,7 @@ class DINOSystem(LightningModule):
 
         self.student = MultiCropWrapper(student_backbone, student_head)
         if hparams.pretrained_path: # fine-tune from pretrained dino
-            if self.global_rank == 0:
-                print(f'loading pretrained model from {hparams.pretrained_path} ...')
+            print(f'loading pretrained model from {hparams.pretrained_path} ...')
             ckpt = torch.load(hparams.pretrained_path, map_location='cpu')
             self.student.load_state_dict({k: v for k, v in ckpt['teacher'].items()})
         self.teacher = MultiCropWrapper(self.teacher_backbone, teacher_head)
@@ -83,11 +82,9 @@ class DINOSystem(LightningModule):
                              hparams.num_epochs)
 
     def setup(self, stage=None):
-        if self.global_rank == 0:
-            print('loading image paths ...')
+        print('loading image paths ...')
         self.train_dataset = ImageDataset(hparams.root_dir, 'train')
-        if self.global_rank == 0:
-            print(f'{len(self.train_dataset.image_paths)} image paths loaded!')
+        print(f'{len(self.train_dataset.image_paths)} image paths loaded!')
 
         self.val_dataset = copy.deepcopy(self.train_dataset)
         self.val_dataset.split = 'val'

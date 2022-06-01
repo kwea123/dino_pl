@@ -14,12 +14,10 @@ class ImageDataset(Dataset):
         self.image_paths = []
         # TODO: save image paths to file to avoid reading overhead
         stamp_idxs = sorted(os.listdir(root))
-        print('loading image paths ...')
         for stamp_idx in stamp_idxs:
             image_paths = glob.glob(os.path.join(root, f'{stamp_idx}/[0-9]*.png'))
             image_paths = sorted(filter(lambda x: not 'key' in x, image_paths))
             self.image_paths += image_paths
-        print(f'{len(self.image_paths)} image paths loaded!')
 
     def __len__(self):
         if self.split == 'train':
