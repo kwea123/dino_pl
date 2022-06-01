@@ -14,6 +14,7 @@ from models import vits_dict, MultiCropWrapper, DINOHead
 from losses import DINOLoss
 
 from pytorch_lightning import LightningModule, Trainer
+from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
 
@@ -63,7 +64,8 @@ class DINOSystem(LightningModule):
 
         self.student = MultiCropWrapper(student_backbone, student_head)
         if hparams.pretrained_path: # fine-tune from pretrained dino
-            print(f'loading pretrained model from {hparams.pretrained_path} ...')
+            if self.global_rank == 0:
+                print(f'loading pretrained model from {hparams.pretrained_path} ...')
             ckpt = torch.load(hparams.pretrained_path, map_location='cpu')
             self.student.load_state_dict({k: v for k, v in ckpt['teacher'].items()})
         self.teacher = MultiCropWrapper(self.teacher_backbone, teacher_head)
@@ -81,7 +83,12 @@ class DINOSystem(LightningModule):
                              hparams.num_epochs)
 
     def setup(self, stage=None):
+        if self.global_rank == 0:
+            print('loading image paths ...')
         self.train_dataset = ImageDataset(hparams.root_dir, 'train')
+        if self.global_rank == 0:
+            print(f'{len(self.train_dataset.image_paths)} image paths loaded!')
+
         self.val_dataset = copy.deepcopy(self.train_dataset)
         self.val_dataset.split = 'val'
 
@@ -218,7 +225,8 @@ if __name__ == '__main__':
                       precision=16 if hparams.fp16 else 32,
                       accelerator='auto',
                       devices=hparams.num_gpus,
-                      strategy='ddp' if hparams.num_gpus>1 else None,
+                      strategy=DDPStrategy(find_unused_parameters=False)
+                               if hparams.num_gpus>1 else None,
                       num_sanity_val_steps=1)
 
     trainer.fit(system)
