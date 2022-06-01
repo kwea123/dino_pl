@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from matplotlib import cm
 import copy
+from torchvision.utils import make_grid
 
 from opt import get_opts
 
@@ -197,8 +198,8 @@ class DINOSystem(LightningModule):
 
         tb = self.logger.experiment
         tb.add_image('image', outputs[0]['img'][0], self.global_step)
-        for i in range(len(atts)):
-            tb.add_image(f'attentions/{i}', att2img(atts[i]), self.global_step)
+        atts_vis = [att2img(att) for att in atts]
+        tb.add_image('attentions', make_grid(atts_vis, nrow=3), self.global_step)
 
 
 if __name__ == '__main__':
