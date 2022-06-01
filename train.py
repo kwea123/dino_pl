@@ -66,7 +66,7 @@ class DINOSystem(LightningModule):
         if hparams.pretrained_path: # fine-tune from pretrained dino
             print(f'loading pretrained model from {hparams.pretrained_path} ...')
             ckpt = torch.load(hparams.pretrained_path, map_location='cpu')
-            self.student.load_state_dict({k: v for k, v in ckpt['teacher'].items()})
+            self.student.load_state_dict(ckpt['teacher'])
         self.teacher = MultiCropWrapper(self.teacher_backbone, teacher_head)
         # teacher and student start with the same weights
         self.teacher.load_state_dict(self.student.state_dict())
