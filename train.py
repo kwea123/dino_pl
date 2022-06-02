@@ -13,7 +13,6 @@ from torch.utils.data import DataLoader
 # model
 from models import vits_dict, MultiCropWrapper, DINOHead
 from losses import DINOLoss
-from misc import load_ckpt
 
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.strategies import DDPStrategy
@@ -209,8 +208,7 @@ if __name__ == '__main__':
 
     ckpt_cb = ModelCheckpoint(dirpath=f'ckpts/{hparams.exp_name}',
                               filename='{epoch:d}',
-                              save_top_k=0,
-                              save_last=True) # TODO: save only weight & teacher
+                              save_top_k=-1)
     pbar = TQDMProgressBar(refresh_rate=1)
     callbacks = [ckpt_cb, pbar]
 
