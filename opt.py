@@ -54,7 +54,7 @@ def get_opts():
     # training parameters
     parser.add_argument('--batch_size', type=int, default=168,
                         help='batch size per gpu')
-    parser.add_argument('--num_workers', type=int, default=10,
+    parser.add_argument('--num_workers', type=int, default=4,
                         help='number of workers')
     parser.add_argument('--num_epochs', type=int, default=100,
                         help='number of training epochs')
