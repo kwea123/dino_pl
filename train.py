@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader
 # model
 from models import vits_dict, MultiCropWrapper, DINOHead
 from losses import DINOLoss
+from misc import load_ckpt
 
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.strategies import DDPStrategy
@@ -227,4 +228,4 @@ if __name__ == '__main__':
                                if hparams.num_gpus>1 else None,
                       num_sanity_val_steps=1)
 
-    trainer.fit(system)
+    trainer.fit(system, ckpt_path=hparams.ckpt_path)

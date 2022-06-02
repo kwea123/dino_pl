@@ -75,6 +75,9 @@ def get_opts():
     parser.add_argument('--pretrained_path', type=str,
                         default='dino_deitsmall16_pretrain_full_checkpoint.pth',
                         help='pretrained checkpoint path to load')
+    parser.add_argument('--ckpt_path', type=str, default=None,
+                        help='intermediate training ckpt path to load')
+
 
     parser.add_argument('--fp16', default=False, action='store_true',
                         help='use fp16 training')
