@@ -47,7 +47,6 @@ class DINOLoss(nn.Module):
         self.update_center(teacher_output)
         return total_loss
 
-    @torch.no_grad()
     def update_center(self, teacher_output):
         """
         Update center used for teacher output.
