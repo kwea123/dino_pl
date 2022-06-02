@@ -72,8 +72,7 @@ def get_opts():
                         help="""Clipping with norm .3 ~ 1.0 can
                         help optimization for larger ViT architectures. 0 for disabling.""")
 
-    parser.add_argument('--pretrained_path', type=str,
-                        default='dino_deitsmall16_pretrain_full_checkpoint.pth',
+    parser.add_argument('--pretrained_path', type=str, default=None,
                         help='pretrained checkpoint path to load')
     parser.add_argument('--ckpt_path', type=str, default=None,
                         help='intermediate training ckpt path to load')
