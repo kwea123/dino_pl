@@ -124,14 +124,14 @@ class DINOSystem(LightningModule):
 
         # define schedulers based on number of iterations
         niter_per_ep = len(self.loader)
-        self.lr_sch = cosine_scheduler(self.lr, 1e-6, hparams.num_epochs, niter_per_ep,
+        self.lr_sch = cosine_scheduler(self.lr, 1e-6, hparams.num_epochs, niter_per_ep//hparams.num_gpus,
                                        hparams.warmup_epochs)
         # weight decay scheduler
         self.wd_sch = cosine_scheduler(hparams.weight_decay_init, hparams.weight_decay_end,
-                                       hparams.num_epochs, niter_per_ep)
+                                       hparams.num_epochs, niter_per_ep//hparams.num_gpus)
         # momentum scheduler
         self.mm_sch = cosine_scheduler(hparams.momentum_teacher, 1.0,
-                                       hparams.num_epochs, niter_per_ep)
+                                       hparams.num_epochs, niter_per_ep//hparams.num_gpus)
 
         return self.loader
 
